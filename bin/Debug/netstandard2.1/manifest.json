@@ -1,0 +1,11 @@
+{
+  "name": "RoundsModcah",
+  "version_number": "1.0.0",
+  "website_url": "https://thunderstore.io/",
+  "description": "Rounds mod adding custom cards and gameplay features.",
+  "dependencies": [
+    "Pykess-UnboundLib-3.2.13",
+    "willis81808-ModdingUtils-1.0.0",
+    "Pykess-CardChoiceSpawnUniqueCardPatch-1.0.0"
+  ]
+}

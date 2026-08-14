@@ -94,3 +94,4 @@ C:\Users\micah\source\repos\RoundsModcah\RoundsModcah\bin\Debug\netstandard2.1\M
 C:\Users\micah\source\repos\RoundsModcah\RoundsModcah\obj\Debug\netstandard2.1\RoundsMo.64FC1CD8.Up2Date
 C:\Users\micah\source\repos\RoundsModcah\RoundsModcah\obj\Debug\netstandard2.1\RoundsModcah.dll
 C:\Users\micah\source\repos\RoundsModcah\RoundsModcah\obj\Debug\netstandard2.1\RoundsModcah.pdb
+C:\Users\micah\source\repos\RoundsModcah\RoundsModcah\obj\Debug\netstandard2.1\RoundsModcah.sourcelink.json

@@ -36,6 +36,14 @@ namespace RoundsModcah
 
             instance = this;
             CustomCard.BuildCard<EvasiveManeuvers>();
+            CustomCard.BuildCard<Brute>();
+            CustomCard.BuildCard<GetEm>();
+            CustomCard.BuildCard<OhYeah>();
+            CustomCard.BuildCard<RedditorsBurden>();
+            CustomCard.BuildCard<DeadSpace>();
+            CustomCard.BuildCard<Cat>();
+            CustomCard.BuildCard<OverPowered>();
+            CustomCard.BuildCard<SugarRushPill>();
         }
     }
 }
