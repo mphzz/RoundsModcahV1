@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading.Tasks;
 using UnboundLib;
 using UnboundLib.Cards;
+using UnboundLib.GameModes;
 using UnityEngine;
 using HarmonyLib;
 using Photon.Pun;
@@ -60,7 +61,7 @@ namespace RoundsModcah.Cards
         }
         protected override GameObject GetCardArt()
         {
-            return null;
+            return StickNadeArt.GetOrLoadArt();
         }
         protected override CardInfo.Rarity GetRarity()
         {
@@ -89,7 +90,89 @@ namespace RoundsModcah.Cards
         }
     }
 
-    // Marker attached to the PLAYER while they hold the card - stores the fuse/damage/radius
+    // Loads the card's art from an embedded PNG resource and builds a sprite GameObject
+    // for GetCardArt() to return, since we don't have a Unity Editor to make a real prefab.
+    public static class StickNadeArt
+    {
+        private static GameObject _artPrefab;
+        private static bool _loadAttempted = false;
+
+        public static GameObject GetOrLoadArt()
+        {
+            // Defense in depth: if we previously loaded successfully but the cached object
+            // has since been destroyed (Unity's overloaded == null catches this), force a
+            // fresh reload instead of returning a dead reference.
+            if (_loadAttempted && _artPrefab == null)
+            {
+                _loadAttempted = false;
+            }
+
+            if (_loadAttempted) return _artPrefab;
+            _loadAttempted = true;
+
+            try
+            {
+                System.Reflection.Assembly asm = System.Reflection.Assembly.GetExecutingAssembly();
+                string resourceName = "RoundsModcah.sticknade_art.png"; // adjust namespace prefix if needed
+
+                byte[] imageBytes;
+                using (System.IO.Stream stream = asm.GetManifestResourceStream(resourceName))
+                {
+                    if (stream == null)
+                    {
+                        string allNames = string.Join(", ", asm.GetManifestResourceNames());
+                        UnityEngine.Debug.LogWarning($"[RM][StickNade] Card art resource '{resourceName}' not found. Available: {allNames}");
+                        return null;
+                    }
+
+                    using (System.IO.MemoryStream ms = new System.IO.MemoryStream())
+                    {
+                        stream.CopyTo(ms);
+                        imageBytes = ms.ToArray();
+                    }
+                }
+
+                Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                UnityEngine.ImageConversion.LoadImage(tex, imageBytes); // auto-resizes to actual image dimensions
+
+                Sprite sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), 100f);
+
+                // Confirmed via CardVisuals.Start() source: our cardArt GameObject gets
+                // Instantiate()'d as a child of "Canvas/Front/Background/Art", then its
+                // localPosition/localScale get reset - but nothing sets up RectTransform
+                // anchoring, so we need to stretch-fill to the parent's rect ourselves.
+                GameObject artObj = new GameObject("StickNadeCardArt", typeof(RectTransform));
+                RectTransform rt = artObj.GetComponent<RectTransform>();
+                rt.anchorMin = Vector2.zero;
+                rt.anchorMax = Vector2.one;
+                rt.offsetMin = Vector2.zero;
+                rt.offsetMax = Vector2.zero;
+                rt.pivot = new Vector2(0.5f, 0.5f);
+
+                UnityEngine.UI.Image img = artObj.AddComponent<UnityEngine.UI.Image>();
+                img.sprite = sprite;
+                img.preserveAspect = true;
+                img.color = new Color(0.75f, 0.75f, 0.75f, 1f); // 25% darker
+                // Note: NOT calling SetActive(false) here - Object.Instantiate() copies the
+                // active state of the source object, so every instantiated copy would also
+                // start inactive. Since this master object has no Canvas parent, it won't
+                // render on its own anyway.
+
+                UnityEngine.Object.DontDestroyOnLoad(artObj);
+
+                _artPrefab = artObj;
+                UnityEngine.Debug.Log($"[RM][StickNade] Card art loaded successfully ({tex.width}x{tex.height}).");
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning($"[RM][StickNade] Failed to load card art: {e}");
+                _artPrefab = null;
+            }
+
+            return _artPrefab;
+        }
+    }
+
     // config so the bullet-spawning patch below knows this player's bullets should stick.
     public class StickNadeCardMarker : MonoBehaviour
     {
@@ -109,19 +192,121 @@ namespace RoundsModcah.Cards
         public float explosionRadius = 4f;
         public float explosionForce = 30f;
         public Player ownPlayer;
+        public Vector2 stickNormal = Vector2.up;
         public GameObject visualMarker;
+        public float visualMarkerDesiredScale = 0.7f;
         public Renderer visualMarkerRenderer;
+        public Vector3 bulletDesiredLocalScale = Vector3.one;
+        // Captured from the bullet's own RayCastTrail before we disable it - combines
+        // its wall mask and player mask, so our explosion only "sees" the same things a
+        // real flying bullet would. Without this, non-interactable background/decoration
+        // objects (which bullets deliberately ignore via layer masking) would incorrectly
+        // block or absorb our explosion, since our own Physics2D queries default to
+        // checking every layer.
+        public int bulletInteractMask = ~0; // fallback: everything, in case capture fails
 
         // Safety net: if this component (and its host GameObject) gets destroyed by
         // ANYTHING other than our own ExplodeAfterFuse completing normally - e.g. the
         // bullet's original destroy logic firing from an unrelated collision - make sure
         // our separately-spawned visual marker sphere doesn't get left behind forever.
+        // Continuously re-corrects the visual marker's scale every frame based on the
+        // CURRENT parent scale, rather than a one-time snapshot taken at stick time.
+        // Movable/destructible props can change their own scale during gameplay (damage
+        // feedback, animations, etc.), which made a one-time compensation go stale and
+        // drift the marker smaller/larger over time.
+        private void Update()
+        {
+            if (transform.parent != null)
+            {
+                Vector3 bulletParentLossy = transform.parent.lossyScale;
+                transform.localScale = new Vector3(
+                    bulletParentLossy.x != 0f ? bulletDesiredLocalScale.x / bulletParentLossy.x : bulletDesiredLocalScale.x,
+                    bulletParentLossy.y != 0f ? bulletDesiredLocalScale.y / bulletParentLossy.y : bulletDesiredLocalScale.y,
+                    bulletParentLossy.z != 0f ? bulletDesiredLocalScale.z / bulletParentLossy.z : bulletDesiredLocalScale.z
+                );
+            }
+
+            if (visualMarker == null) return;
+            if (visualMarker.transform.parent == null) return; // unparented (static wall) - no correction needed
+
+            Vector3 parentLossy = visualMarker.transform.parent.lossyScale;
+            visualMarker.transform.localScale = new Vector3(
+                parentLossy.x != 0f ? visualMarkerDesiredScale / parentLossy.x : visualMarkerDesiredScale,
+                parentLossy.y != 0f ? visualMarkerDesiredScale / parentLossy.y : visualMarkerDesiredScale,
+                parentLossy.z != 0f ? visualMarkerDesiredScale / parentLossy.z : visualMarkerDesiredScale
+            );
+        }
+
         private void OnDestroy()
         {
             if (visualMarker != null)
             {
                 Destroy(visualMarker);
             }
+        }
+
+        // Spawns a ring that rapidly expands from 0 to targetRadius and fades out,
+        // like a shockwave - used at the moment of explosion rather than during the fuse.
+        private static IEnumerator ShockwaveRing(Vector3 center, float targetRadius, float duration, Vector2 surfaceNormal, int interactMask)
+        {
+            GameObject ringObj = new GameObject("StickNadeShockwave");
+            LineRenderer lr = ringObj.AddComponent<LineRenderer>();
+
+            const int segments = 48;
+            lr.positionCount = segments + 1;
+            lr.loop = true;
+            lr.useWorldSpace = false;
+            lr.startWidth = 0.15f;
+            lr.endWidth = 0.15f;
+            lr.material = new Material(Shader.Find("Sprites/Default"));
+
+            ringObj.transform.position = center;
+
+            // Precompute how far the ring can expand in each direction before hitting a
+            // wall/object, so it visually stops at obstacles instead of drawing through
+            // them. Players are ignored here (same rule as the damage line-of-sight check
+            // above) so they never clip the ring visually either.
+            Vector3 losOrigin = center + (Vector3)(surfaceNormal * 0.1f);
+            float[] maxDistances = new float[segments + 1];
+            for (int i = 0; i <= segments; i++)
+            {
+                float angle = (float)i / segments * Mathf.PI * 2f;
+                Vector2 dir = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle));
+
+                float maxDist = targetRadius;
+                RaycastHit2D[] wallHits = Physics2D.LinecastAll(losOrigin, (Vector2)losOrigin + dir * targetRadius, interactMask);
+                foreach (RaycastHit2D wh in wallHits)
+                {
+                    if (wh.collider == null) continue;
+                    if (wh.collider.GetComponentInParent<Player>() != null) continue; // players don't clip the ring
+                    if (wh.distance < maxDist) maxDist = wh.distance;
+                }
+                maxDistances[i] = maxDist;
+            }
+
+            float elapsed = 0f;
+            while (elapsed < duration)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / duration);
+
+                float uncappedRadius = Mathf.Lerp(0f, targetRadius, t);
+                for (int i = 0; i <= segments; i++)
+                {
+                    float angle = (float)i / segments * Mathf.PI * 2f;
+                    float currentRadius = Mathf.Min(uncappedRadius, maxDistances[i]);
+                    lr.SetPosition(i, new Vector3(Mathf.Cos(angle) * currentRadius, Mathf.Sin(angle) * currentRadius, 0f));
+                }
+
+                float alpha = Mathf.Lerp(0.9f, 0f, t);
+                Color c = new Color(1f, 0.6f, 0.1f, alpha);
+                lr.startColor = c;
+                lr.endColor = c;
+
+                yield return null;
+            }
+
+            Destroy(ringObj);
         }
 
         // Real, confirmed explosion sound - pulled from the firing player's own gun via
@@ -217,7 +402,7 @@ namespace RoundsModcah.Cards
             tempAudio.transform.position = position;
             AudioSource src = tempAudio.AddComponent<AudioSource>();
             src.clip = _beepClip;
-            src.volume = 1f;
+            src.volume = 0.0525f; // lowered another 50% from previous 0.105
             src.spatialBlend = 0f; // fully 2D, always audible regardless of camera distance
             UnityEngine.Debug.Log($"[RM][StickNade] AudioListener.volume={AudioListener.volume}, AudioListener.pause={AudioListener.pause}");
             AudioListener anyListener = UnityEngine.Object.FindObjectOfType<AudioListener>();
@@ -279,6 +464,22 @@ namespace RoundsModcah.Cards
 
             if (this == null) yield break;
 
+            DoExplode();
+        }
+
+        // The actual detonation logic, extracted so it can be triggered either by the
+        // normal fuse timer completing, OR forced early (e.g. the player we're stuck to
+        // respawns before the fuse naturally runs out - see StickNade_RevivePatch below).
+        public void DoExplode(Player immunePlayer = null)
+        {
+            // Shockwave ring - expands from 0 to the full blast radius rapidly and fades,
+            // giving a clear visual read on the explosion's actual size. Runs on the
+            // persistent plugin instance since THIS object gets destroyed moments from now.
+            if (RoundsModcah.instance != null)
+            {
+                RoundsModcah.instance.StartCoroutine(ShockwaveRing(transform.position, explosionRadius, 0.35f, stickNormal, bulletInteractMask));
+            }
+
             // Reuse the same hit-particle system for a visible "boom" - scaled up via
             // the damage value passed in, since a bigger reported damage produces a
             // more dramatic effect in vanilla's particle scaling
@@ -297,33 +498,74 @@ namespace RoundsModcah.Cards
                 SoundManager.Instance.Play(explosionSound, transform);
             }
 
-            Collider2D[] hits = Physics2D.OverlapCircleAll(transform.position, explosionRadius);
+            // Offset the line-of-sight origin slightly off the surface we're stuck to,
+            // otherwise a raycast from our exact position could immediately hit that same
+            // surface (since we're flush against it) and block everything.
+            Vector3 losOrigin = transform.position + (Vector3)(stickNormal * 0.1f);
+
+            Collider2D[] hits = Physics2D.OverlapCircleAll(transform.position, explosionRadius, bulletInteractMask);
             foreach (Collider2D hit in hits)
             {
-                Vector2 toTarget = (Vector2)hit.transform.position - (Vector2)transform.position;
-                float dist = toTarget.magnitude;
-                Vector2 dir = dist > 0.001f ? toTarget.normalized : Vector2.up;
-                float falloff = Mathf.Clamp01(1f - (dist / explosionRadius));
-
-                // Players: damage + knockback
-                HealthHandler hh = hit.GetComponentInParent<HealthHandler>();
-                if (hh != null)
+                try
                 {
-                    hh.CallTakeDamage(dir * explosionDamage * falloff, transform.position, null, ownPlayer, true);
-                    hh.CallTakeForce(dir * explosionForce * falloff, ForceMode2D.Impulse, false, false, 0f);
-                    continue;
+                    if (hit == null) continue;
+
+                    // Line-of-sight check: skip anything blocked by a wall or non-player
+                    // object between the explosion and the target. Players NEVER block -
+                    // if one player is standing behind another, both still take damage.
+                    RaycastHit2D[] losHits = Physics2D.LinecastAll(losOrigin, hit.bounds.center, bulletInteractMask);
+                    bool blocked = false;
+                    foreach (RaycastHit2D losHit in losHits)
+                    {
+                        if (losHit.collider == null) continue;
+                        if (losHit.transform.root == hit.transform.root) continue; // this is the target itself
+                        if (losHit.collider.GetComponentInParent<Player>() != null) continue; // players never block
+
+                        blocked = true; // a wall or other non-player object is in the way
+                        break;
+                    }
+                    if (blocked) continue;
+
+                    Vector2 toTarget = (Vector2)hit.transform.position - (Vector2)transform.position;
+                    float dist = toTarget.magnitude;
+                    Vector2 dir = dist > 0.001f ? toTarget.normalized : Vector2.up;
+                    float falloff = Mathf.Clamp01(1f - (dist / explosionRadius));
+
+                    // Players: damage + knockback (skip the immune player, if any - used
+                    // when forcing an early detonation on respawn, so the player doesn't
+                    // immediately eat their own nade's blast the instant they come back)
+                    HealthHandler hh = hit.GetComponentInParent<HealthHandler>();
+                    if (hh != null)
+                    {
+                        Player hitPlayer = hh.GetComponent<Player>();
+                        if (immunePlayer != null && hitPlayer == immunePlayer)
+                        {
+                            continue;
+                        }
+
+                        hh.CallTakeDamage(dir * explosionDamage * falloff, transform.position, null, ownPlayer, true);
+                        hh.CallTakeForce(dir * explosionForce * falloff, ForceMode2D.Impulse, false, false, 0f);
+                        continue;
+                    }
+
+                    // Physics props (crates, movable objects): push via BulletPush
+                    NetworkPhysicsObject physObj = hit.GetComponentInParent<NetworkPhysicsObject>();
+                    if (physObj != null)
+                    {
+                        Vector2 localPoint = hit.transform.InverseTransformPoint(transform.position);
+                        CharacterData askerData = (ownPlayer != null) ? ownPlayer.data : null;
+                        physObj.BulletPush(dir * explosionForce * falloff * 800f, localPoint, askerData);
+                    }
                 }
-
-                // Physics props (crates, movable objects): push via BulletPush
-                NetworkPhysicsObject physObj = hit.GetComponentInParent<NetworkPhysicsObject>();
-                if (physObj != null)
+                catch (Exception e)
                 {
-                    Vector2 localPoint = hit.transform.InverseTransformPoint(transform.position);
-                    CharacterData askerData = (ownPlayer != null) ? ownPlayer.data : null;
-                    physObj.BulletPush(dir * explosionForce * falloff * 800f, localPoint, askerData);
+                    // Don't let one bad/destroyed target abort the whole explosion and
+                    // skip cleanup below - just log it and keep going
+                    UnityEngine.Debug.LogWarning($"[RM][StickNade] Error processing explosion hit on {(hit != null ? hit.name : "null")}: {e}");
                 }
             }
 
+            // Cleanup ALWAYS runs now, regardless of what happened in the loop above
             if (visualMarker != null)
             {
                 Destroy(visualMarker);
@@ -392,6 +634,69 @@ namespace RoundsModcah.Cards
         }
     }
 
+    // If a player dies with a stuck-but-not-yet-exploded nade parented to them, the player
+    // object isn't destroyed on death (just repositioned/reset on Revive) - meaning our
+    // stuck nade would otherwise silently ride along through respawn, frozen in place with
+    // its fuse still ticking. This forces any stuck nades to detonate immediately the
+    // moment their host player respawns instead.
+    [HarmonyPatch(typeof(HealthHandler), "Revive")]
+    class StickNade_RevivePatch
+    {
+        static void Postfix(HealthHandler __instance)
+        {
+            Player revivedPlayer = __instance.GetComponent<Player>();
+
+            StickNadeProjectile[] stuckNades = __instance.GetComponentsInChildren<StickNadeProjectile>(true);
+            foreach (StickNadeProjectile nade in stuckNades)
+            {
+                if (nade != null && nade.stuck)
+                {
+                    nade.StopAllCoroutines();
+                    nade.DoExplode(revivedPlayer); // revived player is immune to this specific blast
+                }
+            }
+        }
+    }
+
+    // Second, independent safety net: Revive() likely only covers the mid-round
+    // downed-then-revived path, not necessarily a brand NEW round starting, which may
+    // reset players through an entirely different mechanism. UnboundLib's own documented
+    // round-start hook catches this regardless of whatever internal path the game uses.
+    // Registered by piggybacking on the mod's own Start() via Harmony, so nothing needs
+    // to be manually added to RoundsModcah.cs.
+    [HarmonyPatch(typeof(RoundsModcah), "Start")]
+    class StickNade_RegisterRoundStartHook
+    {
+        static bool _registered = false;
+
+        static void Postfix()
+        {
+            if (_registered) return;
+            _registered = true;
+
+            GameModeManager.AddHook(GameModeHooks.HookRoundStart, OnRoundStart);
+        }
+
+        static IEnumerator OnRoundStart(IGameModeHandler gm)
+        {
+            StickNadeProjectile[] allStuck = UnityEngine.Object.FindObjectsOfType<StickNadeProjectile>();
+            foreach (StickNadeProjectile nade in allStuck)
+            {
+                if (nade == null || !nade.stuck) continue;
+
+                Player immune = null;
+                if (nade.transform.parent != null)
+                {
+                    immune = nade.transform.parent.GetComponentInParent<Player>();
+                }
+
+                nade.StopAllCoroutines();
+                nade.DoExplode(immune);
+            }
+            yield break;
+        }
+    }
+
     // Intercepts the bullet's own hit logic BEFORE it applies damage / destroys itself.
     // If the bullet has a StickNadeProjectile marker and hasn't stuck yet, we take over
     // entirely (return false skips the original method): stop its movement, snap it to
@@ -404,8 +709,10 @@ namespace RoundsModcah.Cards
         {
             StickNadeProjectile marker = __instance.GetComponent<StickNadeProjectile>();
             if (marker == null || marker.stuck) return true; // not our bullet, or already stuck - run vanilla behavior
+            if (wasBlocked) return true; // let the game's normal block handling (DoBlock, reflect, etc.) run instead of sticking
 
             marker.stuck = true;
+            marker.stickNormal = hitNormal != Vector2.zero ? hitNormal : Vector2.up;
 
             // Stop the bullet's own movement (disable the component entirely so gravity
             // doesn't keep getting re-applied every frame in its Update())
@@ -437,13 +744,21 @@ namespace RoundsModcah.Cards
                 r.enabled = true;
             }
 
-            // Figure out what we hit so we can parent both the bullet and our visual
-            // marker to it (sticks to moving targets too)
+            // Figure out what we hit. hitTransform is used for damage checks (works for both
+            // players and walls). parentTransform is set whenever the hit object can actually
+            // MOVE (players, and movable/destructible props with a Rigidbody2D or
+            // NetworkPhysicsObject) - detected directly rather than assumed from viewID vs
+            // colliderID, since movable props are often resolved via colliderID too.
             Transform hitTransform = null;
+            Transform parentTransform = null;
             if (viewID != -1)
             {
                 PhotonView pv = PhotonNetwork.GetPhotonView(viewID);
-                if (pv != null) hitTransform = pv.transform;
+                if (pv != null)
+                {
+                    hitTransform = pv.transform;
+                    parentTransform = pv.transform; // players always move
+                }
             }
             else if (colliderID != -1)
             {
@@ -451,24 +766,55 @@ namespace RoundsModcah.Cards
                 if (colliderID >= 0 && colliderID < colliders.Length)
                 {
                     hitTransform = colliders[colliderID].transform;
+
+                    // Only NetworkPhysicsObject counts as "movable" - many static wall
+                    // pieces have a kinematic Rigidbody2D purely for collision purposes,
+                    // which was incorrectly triggering parenting + scale compensation and
+                    // distorting the marker on static geometry.
+                    bool isMovable = hitTransform.GetComponentInParent<NetworkPhysicsObject>() != null;
+                    if (isMovable)
+                    {
+                        parentTransform = hitTransform;
+                    }
+                    // otherwise stays null - genuinely static geometry doesn't need parenting
                 }
             }
 
-            if (hitTransform != null)
+            if (parentTransform != null)
             {
-                __instance.transform.SetParent(hitTransform, true);
+                Vector3 preParentScale = __instance.transform.localScale;
+                __instance.transform.SetParent(parentTransform, true);
+
+                // Store the pre-parenting scale so Update() can continuously compensate
+                // for the parent's scale every frame, instead of a one-time snapshot that
+                // goes stale if the parent's scale changes afterward (e.g. breakable props
+                // with damage-reaction or wobble animations).
+                marker.bulletDesiredLocalScale = preParentScale;
             }
 
-            // Deal normal direct hit damage if we hit a player (has a HealthHandler) -
-            // walls/environment have no HealthHandler so this is naturally skipped for them.
-            // This happens once, immediately, separate from the later explosion damage.
+            // Deal normal direct hit damage if we hit anything Damagable - this covers BOTH
+            // players (HealthHandler extends Damagable) AND world objects like Sandbox mode's
+            // pickup-by-shooting cards (which use Damagable/DamagableEvent, not HealthHandler).
+            // Originally this only checked HealthHandler, which silently broke card claiming.
             if (hitTransform != null)
             {
-                HealthHandler targetHealth = hitTransform.GetComponent<HealthHandler>();
-                if (targetHealth != null)
+                try
                 {
-                    Vector2 dmgVector = (Vector2)__instance.transform.forward * __instance.damage * __instance.dealDamageMultiplierr;
-                    targetHealth.CallTakeDamage(dmgVector, hitPoint, __instance.ownWeapon, __instance.ownPlayer, true);
+                    // Using GetComponentInParent (not GetComponent) to match how vanilla's
+                    // RPCA_DoHit does this lookup - Damagable can live on a parent of the
+                    // actual hit collider, e.g. on Sandbox mode's world-placed cards.
+                    Damagable targetDamagable = hitTransform.GetComponentInParent<Damagable>();
+                    if (targetDamagable != null)
+                    {
+                        Vector2 dmgVector = (Vector2)__instance.transform.forward * __instance.damage * __instance.dealDamageMultiplierr;
+                        targetDamagable.CallTakeDamage(dmgVector, hitPoint, __instance.ownWeapon, __instance.ownPlayer, true);
+                    }
+                }
+                catch (Exception e)
+                {
+                    // Don't let a failure here (e.g. target already dying/respawning) stop
+                    // the rest of the sticking process from completing below
+                    UnityEngine.Debug.LogWarning($"[RM][StickNade] Error dealing direct hit damage: {e}");
                 }
             }
 
@@ -486,13 +832,18 @@ namespace RoundsModcah.Cards
                 markerRenderer.material.EnableKeyword("_EMISSION");
                 markerRenderer.material.SetColor("_EmissionColor", Color.red * 2.5f);
             }
-            if (hitTransform != null)
+            if (parentTransform != null)
             {
-                stickMarker.transform.SetParent(hitTransform, true);
+                stickMarker.transform.SetParent(parentTransform, true);
+                // Scale correction is now handled continuously every frame in Update()
+                // instead of a one-time calculation here, so it stays accurate even if
+                // the parent's scale changes after the initial stick.
             }
             marker.visualMarker = stickMarker;
             marker.visualMarkerRenderer = markerRenderer;
+            marker.visualMarkerDesiredScale = 0.7f; // matches stickMarker's initial localScale
 
+            // (radius ring now shown at explosion time as a shockwave instead of during the fuse)
             marker.PlayLandSound();
 
             // Disable the bullet's own collider so it doesn't keep re-triggering hits while stuck
@@ -518,10 +869,36 @@ namespace RoundsModcah.Cards
             RayCastTrail rayTrail = __instance.GetComponent<RayCastTrail>();
             if (rayTrail != null)
             {
+                // Capture the real interaction masks BEFORE disabling - combining wall
+                // mask + player mask gives us "everything a real bullet actually
+                // interacts with", correctly excluding non-interactable background
+                // objects that bullets pass through like air.
+                marker.bulletInteractMask = (int)rayTrail.mask | (int)rayTrail.playerMask;
                 rayTrail.enabled = false;
             }
 
             marker.StartCoroutine(marker.ExplodeAfterFuse());
+
+            // Fire the same post-hit callbacks vanilla RPCA_DoHit normally calls at its end
+            // (hitAction, hitActionWithData, deathEvent) - we skip the whole original method,
+            // but other systems (like Sandbox mode's "shoot a card to claim it" mechanic)
+            // hook into these exact events to detect a bullet hit, so we replicate them here.
+            // Using Traverse since we don't know these fields' exact access modifiers.
+            try
+            {
+                Action hitActionValue = Traverse.Create(__instance).Field("hitAction").GetValue<Action>();
+                hitActionValue?.Invoke();
+
+                Action<HitInfo> hitActionWithDataValue = Traverse.Create(__instance).Field("hitActionWithData").GetValue<Action<HitInfo>>();
+                hitActionWithDataValue?.Invoke(stickHitInfo);
+
+                UnityEngine.Events.UnityEvent deathEventValue = Traverse.Create(__instance).Field("deathEvent").GetValue<UnityEngine.Events.UnityEvent>();
+                deathEventValue?.Invoke();
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning($"[RM][StickNade] Error firing post-hit callbacks: {e}");
+            }
 
             return false; // skip the original method entirely - no damage/destroy on the initial stick
         }
