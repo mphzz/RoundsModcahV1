@@ -46,14 +46,22 @@ namespace RoundsModcah.Cards
             // than repositioned every frame, and handPos is the actual anchor for that.
             // data.hand may just be a generic reference point unrelated to visible items.
             Holding holding = player.gameObject.GetComponentInChildren<Holding>();
-            Transform anchor = (holding != null) ? holding.handPos : data.hand;
+            Transform anchor = data.hand;
+            if (holding != null)
+            {
+                Transform handPosViaTraverse = Traverse.Create(holding).Field("handPos").GetValue<Transform>();
+                if (handPosViaTraverse != null)
+                {
+                    anchor = handPosViaTraverse;
+                }
+            }
             UnityEngine.Debug.Log($"[RM][Kunai] Holding found: {holding != null}. Using anchor: {(anchor != null ? anchor.name : "null")}");
 
             KunaiThrowAnim throwAnim = player.gameObject.AddComponent<KunaiThrowAnim>();
             throwAnim.Setup(anchor);
 
             KunaiHandVisual handVisual = player.gameObject.AddComponent<KunaiHandVisual>();
-            handVisual.Setup(gun, anchor);
+            handVisual.Setup(gun, anchor, data);
         }
         public override void OnRemoveCard(Player player, Gun gun, GunAmmo gunAmmo, CharacterData data, HealthHandler health, Gravity gravity, Block block, CharacterStatModifiers characterStats)
         {
@@ -91,7 +99,7 @@ namespace RoundsModcah.Cards
         }
         protected override GameObject GetCardArt()
         {
-            return null;
+            return KunaiCardArt.GetOrLoadArt();
         }
         protected override CardInfo.Rarity GetRarity()
         {
@@ -130,7 +138,101 @@ namespace RoundsModcah.Cards
 
     // Marker on the PLAYER while they hold the card - tells the BulletInit patch below
     // that this player's bullets should get the kunai visual attached.
+    // Loads Kunai's card art from an embedded PNG resource and builds a UI.Image
+    // GameObject for GetCardArt() to return - same pattern as Stick Nade's card art,
+    // now using the CONFIRMED correct art frame aspect ratio (1100x864.9, ~1.272:1)
+    // instead of guessing, so no overshoot hack is needed.
+    public static class KunaiCardArt
+    {
+        private static GameObject _artPrefab;
+        private static bool _loadAttempted = false;
+
+        public static GameObject GetOrLoadArt()
+        {
+            if (_loadAttempted && _artPrefab == null)
+            {
+                _loadAttempted = false; // retry if the cached object was destroyed (e.g. scene transition)
+            }
+
+            if (_loadAttempted) return _artPrefab;
+            _loadAttempted = true;
+
+            try
+            {
+                System.Reflection.Assembly asm = System.Reflection.Assembly.GetExecutingAssembly();
+                string resourceName = "RoundsModcah.kunai_art.png"; // adjust if the fallback log shows a different name
+
+                byte[] imageBytes;
+                using (System.IO.Stream stream = asm.GetManifestResourceStream(resourceName))
+                {
+                    if (stream == null)
+                    {
+                        string allNames = string.Join(", ", asm.GetManifestResourceNames());
+                        UnityEngine.Debug.LogWarning($"[RM][Kunai] Card art resource '{resourceName}' not found. Available: {allNames}");
+                        return null;
+                    }
+
+                    using (System.IO.MemoryStream ms = new System.IO.MemoryStream())
+                    {
+                        stream.CopyTo(ms);
+                        imageBytes = ms.ToArray();
+                    }
+                }
+
+                Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                UnityEngine.ImageConversion.LoadImage(tex, imageBytes);
+
+                Sprite sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), 100f);
+
+                GameObject artObj = new GameObject("KunaiCardArt", typeof(RectTransform));
+                RectTransform rt = artObj.GetComponent<RectTransform>();
+                rt.anchorMin = Vector2.zero;
+                rt.anchorMax = Vector2.one;
+                rt.offsetMin = Vector2.zero;
+                rt.offsetMax = Vector2.zero;
+                rt.pivot = new Vector2(0.5f, 0.5f);
+
+                UnityEngine.UI.Image img = artObj.AddComponent<UnityEngine.UI.Image>();
+                img.sprite = sprite;
+                img.preserveAspect = false; // image should already match the frame's real 1.272:1 aspect ratio
+
+                UnityEngine.Object.DontDestroyOnLoad(artObj); // survive scene transitions, same fix Stick Nade needed
+
+                _artPrefab = artObj;
+                UnityEngine.Debug.Log($"[RM][Kunai] Card art loaded successfully ({tex.width}x{tex.height}).");
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning($"[RM][Kunai] Failed to load card art: {e}");
+                _artPrefab = null;
+            }
+
+            return _artPrefab;
+        }
+    }
+
     public class KunaiCardMarker : MonoBehaviour { }
+
+    // Hard guarantee against auto-fire: gates every attack attempt through
+    // data.input.shootWasPressed (true only on the exact frame a fresh click begins,
+    // unlike shootIsPressed which stays true for the whole duration a button is held).
+    // This blocks held-fire regardless of WHY it might otherwise be possible - e.g.
+    // stacking with other attack-speed cards (like Over Powered) apparently drops the
+    // effective cooldown low enough for the base game's own input handling to start
+    // treating a held button as valid repeated presses, even though neither card
+    // explicitly enables auto-fire on its own.
+    [HarmonyPatch(typeof(Gun), "DoAttack")]
+    class Kunai_NoAutoFirePatch
+    {
+        static bool Prefix(Gun __instance)
+        {
+            if (__instance.player == null) return true;
+            if (__instance.player.gameObject.GetComponent<KunaiCardMarker>() == null) return true;
+            if (__instance.player.data == null || __instance.player.data.input == null) return true;
+
+            return __instance.player.data.input.shootWasPressed;
+        }
+    }
 
     // Procedural "throw" flick for the hand, since we have no way to author a real
     // animation clip from code. Applies a temporary additive rotation offset on top of
@@ -150,28 +252,17 @@ namespace RoundsModcah.Cards
     // show normally - not accounted for yet.
     public class KunaiHandVisual : MonoBehaviour
     {
-        // TEMPORARY DEBUG helper - a giant solid magenta square, impossible to miss if
-        // anything is rendering at all. Remove once the real visibility issue is found.
-        private static Sprite _debugSprite;
-        private static Sprite GetDebugTestSprite()
-        {
-            if (_debugSprite != null) return _debugSprite;
-
-            int size = 64;
-            Texture2D tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
-            Color[] pixels = new Color[size * size];
-            for (int i = 0; i < pixels.Length; i++) pixels[i] = Color.magenta;
-            tex.SetPixels(pixels);
-            tex.Apply();
-
-            _debugSprite = Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100f);
-            return _debugSprite;
-        }
         private readonly List<Renderer> _hiddenRenderers = new List<Renderer>();
         private GameObject _staticKunaiObj;
+        private Transform _followTarget;
+        private CharacterData _data;
 
-        public void Setup(Gun gun, Transform hand)
+        private const float RotationOffset = 132.64f; // computed from the actual kunai_blade.png art's diagonal orientation
+
+        public void Setup(Gun gun, Transform hand, CharacterData data)
         {
+            _data = data;
+
             if (gun != null)
             {
                 foreach (Renderer r in gun.GetComponentsInChildren<Renderer>(true))
@@ -186,26 +277,32 @@ namespace RoundsModcah.Cards
 
             if (hand != null)
             {
+                // Deliberately NOT parented (unlike our first attempt) - a real child of
+                // handPos never rendered despite every value checking out correctly on
+                // paper (active, correct scale, correct layer/sorting/material), while an
+                // unparented sibling at nearly the same position rendered fine. Something
+                // about the handPos hierarchy itself breaks rendering for children, so we
+                // sidestep it entirely: keep this as an independent root object and just
+                // copy the anchor's position every frame instead.
                 _staticKunaiObj = new GameObject("KunaiHandSprite");
-                _staticKunaiObj.transform.SetParent(hand, false);
-                _staticKunaiObj.transform.localPosition = Vector3.zero;
-                _staticKunaiObj.transform.localRotation = Quaternion.identity;
-                _staticKunaiObj.transform.localScale = Vector3.one * 3f; // our sprite is tiny in world units, scale up as a starting guess
+                _followTarget = hand;
+                Vector3 initialPos = hand.position;
+                initialPos.z = 0f; // force to the same Z plane as the working isolated test - handPos itself sits at Z=0.6, which may be getting clipped/occluded
+                _staticKunaiObj.transform.position = initialPos;
+                _staticKunaiObj.transform.rotation = ComputeRotation();
+                _staticKunaiObj.transform.localScale = Vector3.one * 0.3f; // ~90% smaller than the old 3f; adjust further as needed
+
+                if (gun != null)
+                {
+                    _staticKunaiObj.layer = gun.gameObject.layer;
+                }
 
                 SpriteRenderer sr = _staticKunaiObj.AddComponent<SpriteRenderer>();
-
-                // TEMPORARY DEBUG: swapped to a huge, unmistakable solid magenta square
-                // instead of the real kunai sprite, to isolate whether the problem is
-                // rendering/parenting in general, or something specific to our kunai
-                // texture. Revert to KunaiSprite.Get() once this is confirmed visible.
-                sr.sprite = GetDebugTestSprite();
+                sr.material = new Material(Shader.Find("Sprites/Default"));
+                sr.sprite = KunaiSprite.Get();
                 sr.color = Color.white;
                 sr.enabled = true;
 
-                // Try to match sorting layer/order from a nearby existing renderer (e.g. one
-                // of the gun renderers we just hid) rather than assuming "Default" - 2D games
-                // often use named sorting LAYERS, and being on the wrong layer entirely would
-                // make sortingOrder irrelevant.
                 if (_hiddenRenderers.Count > 0 && _hiddenRenderers[0] != null)
                 {
                     sr.sortingLayerID = _hiddenRenderers[0].sortingLayerID;
@@ -216,10 +313,42 @@ namespace RoundsModcah.Cards
                     sr.sortingOrder = 10;
                 }
 
-                UnityEngine.Debug.Log($"[RM][Kunai] Hand sprite created. worldPos={_staticKunaiObj.transform.position}, " +
-                    $"localScale={_staticKunaiObj.transform.localScale}, lossyScale={_staticKunaiObj.transform.lossyScale}, " +
-                    $"sortingLayerID={sr.sortingLayerID}, sortingOrder={sr.sortingOrder}, spriteNull={sr.sprite == null}, " +
-                    $"handWorldPos={hand.position}");
+                UnityEngine.Debug.Log($"[RM][Kunai] Hand sprite created. worldPos={_staticKunaiObj.transform.position}, sortingOrder={sr.sortingOrder}.");
+            }
+        }
+
+        // Uses CharacterData.input.aimDirection (the actual aim vector toward the cursor)
+        // instead of hand.rotation, which wasn't reliably reflecting aim direction.
+        private Quaternion ComputeRotation()
+        {
+            if (_data != null && _data.input != null)
+            {
+                Vector2 aim = _data.input.aimDirection;
+                if (aim.sqrMagnitude > 0.0001f)
+                {
+                    float aimAngle = Mathf.Atan2(aim.y, aim.x) * Mathf.Rad2Deg;
+                    return Quaternion.Euler(0f, 0f, aimAngle + RotationOffset);
+                }
+            }
+
+            // Fallback to hand's own Z rotation if aimDirection isn't available for some reason
+            if (_followTarget != null)
+            {
+                float zAngle = _followTarget.rotation.eulerAngles.z;
+                return Quaternion.Euler(0f, 0f, zAngle + RotationOffset);
+            }
+
+            return Quaternion.identity;
+        }
+
+        private void Update()
+        {
+            if (_staticKunaiObj != null && _followTarget != null)
+            {
+                Vector3 pos = _followTarget.position;
+                pos.z = 0f; // keep forcing to the working Z plane every frame
+                _staticKunaiObj.transform.position = pos;
+                _staticKunaiObj.transform.rotation = ComputeRotation();
             }
         }
 
@@ -290,74 +419,62 @@ namespace RoundsModcah.Cards
         }
     }
 
-    // Builds a small procedural kunai-blade sprite once (blade tapering to a point +
-    // guard + handle), the same way card art was built - drawing pixels into a Texture2D
-    // and wrapping it in a Sprite, since we have no way to import real art assets.
+    // Loads the real kunai blade sprite from an embedded PNG resource, same pipeline used
+    // for Stick Nade's card art (embedded resource -> decode -> Sprite). Pivot is centered
+    // (0.5, 0.5) since this sprite is used both rotating in-flight and static in the hand.
+    //
+    // IMPORTANT: for the rotation logic elsewhere (KunaiVisual facing direction of travel)
+    // to look correct, draw the blade pointing UP (+Y) in the source image, same
+    // orientation the old procedural version used.
     public static class KunaiSprite
     {
         private static Sprite _sprite;
-        private static bool _built = false;
+        private static bool _loadAttempted = false;
 
         public static Sprite Get()
         {
-            if (_built) return _sprite;
-            _built = true;
+            if (_loadAttempted) return _sprite;
+            _loadAttempted = true;
 
-            const int width = 24;
-            const int height = 48;
-            Texture2D tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
-
-            Color clear = new Color(0f, 0f, 0f, 0f);
-            Color bladeFill = new Color(0.85f, 0.87f, 0.9f, 1f);
-            Color bladeEdge = new Color(0.55f, 0.58f, 0.62f, 1f);
-            Color guardColor = new Color(0.3f, 0.3f, 0.33f, 1f);
-            Color handleColor = new Color(0.12f, 0.08f, 0.06f, 1f);
-
-            const float centerX = width / 2f;
-            const float bladeBaseY = 16f;   // where the blade meets the guard
-            const float guardY = 14f;       // guard occupies bladeBaseY down to guardY
-            const float bladeHalfWidthBase = 6f;
-            const float guardHalfWidth = bladeHalfWidthBase + 1.5f;
-            const float handleHalfWidth = 2.5f;
-
-            for (int y = 0; y < height; y++)
+            try
             {
-                for (int x = 0; x < width; x++)
+                System.Reflection.Assembly asm = System.Reflection.Assembly.GetExecutingAssembly();
+                string resourceName = "RoundsModcah.kunai_blade.png"; // adjust if the fallback log shows a different name
+
+                byte[] imageBytes;
+                using (System.IO.Stream stream = asm.GetManifestResourceStream(resourceName))
                 {
-                    Color c = clear;
-                    float dist = Mathf.Abs(x - centerX);
-
-                    if (y >= bladeBaseY)
+                    if (stream == null)
                     {
-                        // Blade: tapers linearly from full width at the base to a point at the tip
-                        float t = (y - bladeBaseY) / (height - 1f - bladeBaseY);
-                        float halfWidth = Mathf.Lerp(bladeHalfWidthBase, 0f, t);
-                        if (dist <= halfWidth)
-                        {
-                            c = dist > halfWidth - 1.2f ? bladeEdge : bladeFill;
-                        }
-                    }
-                    else if (y >= guardY)
-                    {
-                        if (dist <= guardHalfWidth)
-                        {
-                            c = guardColor;
-                        }
-                    }
-                    else
-                    {
-                        if (dist <= handleHalfWidth)
-                        {
-                            c = handleColor;
-                        }
+                        string allNames = string.Join(", ", asm.GetManifestResourceNames());
+                        UnityEngine.Debug.LogWarning($"[RM][Kunai] Embedded resource '{resourceName}' not found. Available: {allNames}");
+                        return null;
                     }
 
-                    tex.SetPixel(x, y, c);
+                    using (System.IO.MemoryStream ms = new System.IO.MemoryStream())
+                    {
+                        stream.CopyTo(ms);
+                        imageBytes = ms.ToArray();
+                    }
                 }
-            }
-            tex.Apply();
 
-            _sprite = Sprite.Create(tex, new Rect(0, 0, width, height), new Vector2(0.5f, 0.5f), 100f);
+                Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                UnityEngine.ImageConversion.LoadImage(tex, imageBytes);
+
+                // Pivot set to the approximate grip point (near the handle/ring), NOT the
+                // center - computed by analyzing the actual image: tip at bottom-left,
+                // handle+ring at top-right. This makes rotation swing around the grip
+                // (which stays anchored at the hand) so the tip naturally points toward
+                // wherever the character is aiming.
+                _sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.755f, 0.782f), 100f);
+                UnityEngine.Debug.Log($"[RM][Kunai] Blade sprite loaded successfully ({tex.width}x{tex.height}).");
+            }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogWarning($"[RM][Kunai] Failed to load blade sprite: {e}");
+                _sprite = null;
+            }
+
             return _sprite;
         }
     }
@@ -368,16 +485,30 @@ namespace RoundsModcah.Cards
     public class KunaiVisual : MonoBehaviour
     {
         private MoveTransform _moveComp;
+        private Transform _bulletTransform;
 
         public void Setup(Transform bulletTransform, MoveTransform moveComp)
         {
-            transform.SetParent(bulletTransform, false);
-            transform.localPosition = Vector3.zero;
+            // Deliberately NOT a true child of the bullet (unlike our first attempt here)
+            // - we already found that true parenting to certain transforms (handPos)
+            // silently breaks rendering despite everything checking out correctly on
+            // paper. Using the same proven fix: stay unparented, track position/rotation
+            // manually every frame instead.
+            _bulletTransform = bulletTransform;
             _moveComp = moveComp;
+            transform.position = bulletTransform.position;
         }
 
         private void LateUpdate()
         {
+            if (_bulletTransform == null)
+            {
+                Destroy(gameObject);
+                return;
+            }
+
+            transform.position = _bulletTransform.position;
+
             if (_moveComp == null) return;
 
             Vector2 dir = ((Vector2)_moveComp.velocity);
@@ -385,8 +516,12 @@ namespace RoundsModcah.Cards
 
             dir.Normalize();
             float angle = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg;
-            // Sprite is drawn tip-up (+Y), so offset by -90 to align "up" with travel direction
-            transform.rotation = Quaternion.Euler(0f, 0f, angle - 90f);
+            // Offset computed from the actual image: the blade's tip points at roughly
+            // -132.64 degrees relative to the grip pivot in the source art (diagonal,
+            // tip bottom-left / handle top-right), so we need +132.64 to align it with
+            // the direction of travel.
+            const float rotationOffset = 132.64f;
+            transform.rotation = Quaternion.Euler(0f, 0f, angle + rotationOffset);
         }
     }
 
@@ -546,6 +681,42 @@ namespace RoundsModcah.Cards
         }
     }
 
+    // Tracks a bullet's companion KunaiVisual, since it's no longer a true child (see the
+    // parenting invisibility issue noted in KunaiVisual above) and needs manual tracking
+    // for pooled-bullet reuse, plus explicit cleanup since Unity won't auto-destroy it
+    // alongside the bullet anymore.
+    public class KunaiVisualLink : MonoBehaviour
+    {
+        public GameObject companionVisual;
+
+        private void OnDestroy()
+        {
+            if (companionVisual != null)
+            {
+                Destroy(companionVisual);
+            }
+        }
+    }
+
+    // Hides the bullet's own default appearance (the vanilla team-colored sprite) for
+    // players holding Kunai, since we provide our own companion visual (KunaiVisual)
+    // instead. Same patch point (Gun.ApplyProjectileStats) already proven to work for
+    // Stick Nade's bullet color fix.
+    [HarmonyPatch(typeof(Gun), "ApplyProjectileStats")]
+    class Kunai_HideDefaultBulletPatch
+    {
+        static void Postfix(Gun __instance, GameObject obj)
+        {
+            if (__instance.player == null) return;
+            if (__instance.player.gameObject.GetComponent<KunaiCardMarker>() == null) return;
+
+            foreach (Renderer r in obj.GetComponentsInChildren<Renderer>(true))
+            {
+                r.enabled = false;
+            }
+        }
+    }
+
     // Attaches (or reuses, since bullets are pooled) the kunai visual on every bullet
     // fired by a player holding the card.
     [HarmonyPatch(typeof(Gun), "BulletInit")]
@@ -561,15 +732,29 @@ namespace RoundsModcah.Cards
 
             // Reuse the existing visual if this pooled bullet already has one from a
             // previous shot, instead of stacking duplicates.
-            KunaiVisual existing = bullet.GetComponentInChildren<KunaiVisual>();
-            if (existing == null)
+            KunaiVisualLink link = bullet.GetComponent<KunaiVisualLink>();
+            if (link == null)
+            {
+                link = bullet.AddComponent<KunaiVisualLink>();
+            }
+
+            KunaiVisual existing;
+            if (link.companionVisual == null)
             {
                 GameObject visualObj = new GameObject("KunaiVisual");
+                visualObj.transform.localScale = Vector3.one * 0.3f; // matches hand visual sizing, tune as needed
                 SpriteRenderer sr = visualObj.AddComponent<SpriteRenderer>();
+                sr.material = new Material(Shader.Find("Sprites/Default")); // same fix as the hand visual
                 sr.sprite = KunaiSprite.Get();
 
                 existing = visualObj.AddComponent<KunaiVisual>();
                 existing.Setup(bullet.transform, moveComp);
+
+                link.companionVisual = visualObj;
+            }
+            else
+            {
+                existing = link.companionVisual.GetComponent<KunaiVisual>();
             }
 
             // Play our custom throw sound once per shot, and make sure loading has kicked

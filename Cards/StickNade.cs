@@ -16,6 +16,7 @@ using SoundImplementation;
 
 namespace RoundsModcah.Cards
 {
+
     class StickNade : CustomCard
     {
         public override void SetupCard(CardInfo cardInfo, Gun gun, ApplyCardStats cardStats, CharacterStatModifiers statModifiers, Block block)
@@ -166,13 +167,18 @@ namespace RoundsModcah.Cards
                 RectTransform rt = artObj.GetComponent<RectTransform>();
                 rt.anchorMin = Vector2.zero;
                 rt.anchorMax = Vector2.one;
+                // Overshoot past the frame edges on all sides (negative offsetMin, positive
+                // offsetMax extends outward) since exact stretch-to-parent wasn't reaching
+                // the true edges, leaving a visible gap. Slight overflow is preferable to a gap.
+                // Clean stretch-fill, no overshoot needed now that the image is sized to
+                // match the frame's actual aspect ratio (confirmed via diagnostic: 1100x864.9, ~1.272:1)
                 rt.offsetMin = Vector2.zero;
                 rt.offsetMax = Vector2.zero;
                 rt.pivot = new Vector2(0.5f, 0.5f);
 
                 UnityEngine.UI.Image img = artObj.AddComponent<UnityEngine.UI.Image>();
                 img.sprite = sprite;
-                img.preserveAspect = true;
+                img.preserveAspect = false; // stretch to completely fill the art frame - was leaving gaps on the sides since the 200x200 square image didn't match the frame's actual (taller) aspect ratio
                 img.color = new Color(0.75f, 0.75f, 0.75f, 1f); // 25% darker
                 // Note: NOT calling SetActive(false) here - Object.Instantiate() copies the
                 // active state of the source object, so every instantiated copy would also

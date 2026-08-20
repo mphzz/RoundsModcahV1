@@ -52,6 +52,8 @@
 		<EmbeddedResource Include="sticknade_beep.wav" />
 		<EmbeddedResource Include="sticknade_art.png" />
 		<EmbeddedResource Include="kunai_throw.wav" />
+		<EmbeddedResource Include="kunai_blade.png" />
+		<EmbeddedResource Include="kunai_art.png" />
 		<Reference Include="UnityEngine.ImageConversionModule">
 			<HintPath>F:\EVERYTHING ELSE\Steam\steamapps\common\ROUNDS\ROUNDS_Data\Managed\UnityEngine.ImageConversionModule.dll</HintPath>
 		</Reference>

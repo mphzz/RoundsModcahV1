@@ -47,6 +47,7 @@ namespace RoundsModcah
             CustomCard.BuildCard<PoopParty>();
             CustomCard.BuildCard<StickNade>();
             CustomCard.BuildCard<Kunai>();
+            CustomCard.BuildCard<Decoy>();
         }
     }
 }
