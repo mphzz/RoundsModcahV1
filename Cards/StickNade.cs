@@ -24,8 +24,13 @@ namespace RoundsModcah.Cards
             UnityEngine.Debug.Log($"[{RoundsModcah.ModInitials}][Card] {GetTitle()} has been setup.");
 
             // Normal bullet damage - now dealt directly on a player hit (see the Harmony
-            // patch below), in addition to the later explosion damage
-            gun.damage = 1f;
+            // patch below), in addition to the later explosion damage. -20% as the card's
+            // tradeoff for the sticky/explosive utility.
+            gun.damage = 0.8f;
+
+            // -30% attack speed (attackSpeedMultiplier, not attackSpeed - higher = faster,
+            // confirmed via Gun.IsReady())
+            gun.attackSpeedMultiplier = 0.7f;
         }
         public override void OnAddCard(Player player, Gun gun, GunAmmo gunAmmo, CharacterData data, HealthHandler health, Gravity gravity, Block block, CharacterStatModifiers characterStats)
         {
@@ -57,7 +62,7 @@ namespace RoundsModcah.Cards
         }
         protected override string GetDescription()
         {
-            return "Bullets stick to whatever they hit, then explode after a short fuse.";
+            return "Bullets stick, then explode after a short fuse. -30% Attack Speed, -20% Damage.";
         }
         protected override GameObject GetCardArt()
         {
@@ -76,6 +81,22 @@ namespace RoundsModcah.Cards
                     positive = true,
                     stat = "Effect",
                     amount = "Sticky Explosive",
+                    simepleAmount = CardInfoStat.SimpleAmount.notAssigned
+                },
+
+                new CardInfoStat()
+                {
+                    positive = false,
+                    stat = "Attack Speed",
+                    amount = "-30%",
+                    simepleAmount = CardInfoStat.SimpleAmount.notAssigned
+                },
+
+                new CardInfoStat()
+                {
+                    positive = false,
+                    stat = "Damage",
+                    amount = "-20%",
                     simepleAmount = CardInfoStat.SimpleAmount.notAssigned
                 }
             };
