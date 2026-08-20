@@ -1,10 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <Nullable>enable</Nullable>
   </PropertyGroup>
-
   <ItemGroup>
     <Reference Include="0Harmony">
       <HintPath>..\..\..\..\Downloads\BepInEx\BepInEx\core\0Harmony.dll</HintPath>
@@ -30,6 +28,27 @@
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>F:\EVERYTHING ELSE\Steam\steamapps\common\ROUNDS\ROUNDS_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
     </Reference>
+    <Reference Include="UnityEngine.Physics2DModule">
+      <HintPath>F:\EVERYTHING ELSE\Steam\steamapps\common\ROUNDS\ROUNDS_Data\Managed\UnityEngine.Physics2DModule.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonUnityNetworking">
+      <HintPath>F:\EVERYTHING ELSE\Steam\steamapps\common\ROUNDS\ROUNDS_Data\Managed\PhotonUnityNetworking.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>F:\EVERYTHING ELSE\Steam\steamapps\common\ROUNDS\ROUNDS_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
+    </Reference>
+    <Reference Include="SonigonAudioEngine.Runtime">
+      <HintPath>F:\EVERYTHING ELSE\Steam\steamapps\common\ROUNDS\ROUNDS_Data\Managed\SonigonAudioEngine.Runtime.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestModule">
+      <HintPath>F:\EVERYTHING ELSE\Steam\steamapps\common\ROUNDS\ROUNDS_Data\Managed\UnityEngine.UnityWebRequestModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestAudioModule">
+      <HintPath>F:\EVERYTHING ELSE\Steam\steamapps\common\ROUNDS\ROUNDS_Data\Managed\UnityEngine.UnityWebRequestAudioModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>F:\EVERYTHING ELSE\Steam\steamapps\common\ROUNDS\ROUNDS_Data\Managed\UnityEngine.AudioModule.dll</HintPath>
+    </Reference>
+    <EmbeddedResource Include="sticknade_beep.wav" />
   </ItemGroup>
-
 </Project>

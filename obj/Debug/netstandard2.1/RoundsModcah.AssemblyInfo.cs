@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("RoundsModcah")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d784305b9cad0171e6fea6c14fc76ec8f042eb50")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c8ddf19e9765b30a436ad9fdc19c1b8c405a68e1")]
 [assembly: System.Reflection.AssemblyProductAttribute("RoundsModcah")]
 [assembly: System.Reflection.AssemblyTitleAttribute("RoundsModcah")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

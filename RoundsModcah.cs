@@ -44,6 +44,8 @@ namespace RoundsModcah
             CustomCard.BuildCard<Cat>();
             CustomCard.BuildCard<OverPowered>();
             CustomCard.BuildCard<SugarRushPill>();
+            CustomCard.BuildCard<PoopParty>();
+            CustomCard.BuildCard<StickNade>();
         }
     }
 }
