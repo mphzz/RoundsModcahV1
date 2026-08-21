@@ -48,6 +48,7 @@ namespace RoundsModcah
             CustomCard.BuildCard<StickNade>();
             CustomCard.BuildCard<Kunai>();
             CustomCard.BuildCard<Decoy>();
+            CustomCard.BuildCard<Nana>();
         }
     }
 }
